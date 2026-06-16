@@ -32,7 +32,7 @@ auth:
 # 本机 SDK 都会 spawn 子进程，资源占用大，并发别开太高
 # 单 ChatGPT 订阅账号共享，并发越高越容易撞上游限流，默认 6 个并发
 concurrency:
-  global: 6        # 全局同时在跑的请求上限；超出进队列
+  global: 24        # 全局同时在跑的请求上限；超出进队列
   queueMaxSize: 128
 
 retry:
@@ -54,7 +54,7 @@ providers:
     authMode: codex_chatgpt              # 用 codex 订阅登录态鉴权，过期自动刷新
     # authFile: /root/.codex/auth.json   # 不填走 ~/.codex/auth.json
     baseURL: "https://chatgpt.com/backend-api/codex"
-    concurrency: 12
+    concurrency: 18
     queueMaxSize: 128
 
   # 本机 Claude Code（agentic）。每个请求 spawn 一个 claude 子进程，自带登录态
