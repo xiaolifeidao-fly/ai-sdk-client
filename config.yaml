@@ -1,0 +1,119 @@
+server:
+  host: 0.0.0.0
+  port: 8787
+  requestTimeoutMs: 1800000      # 30min，agent 任务可能跑很久
+  queueWaitTimeoutMs: 120000
+  streamIdleTimeoutMs: 120000    # agent 可能长时间执行命令再产输出
+  shutdownTimeoutMs: 30000
+  bodyLimit: 4mb
+
+# 访问鉴权：多人共享时务必开。每个 token 配一个别名（别名只用于日志审计）
+# 客户端请求头带：Authorization: Bearer <token>  或  x-api-key: <token>
+# 生成 token 建议：openssl rand -hex 24
+auth:
+  enabled: true
+  tokens:
+    - token: "933621f96803d2e424572c18ef9a883ea026f98b45dc0502"
+      alias: "server"      # server 服务器专用
+    - token: "46873f1cbb2a2783571cca1b76b63724b135bf2c327cc18f"
+      alias: "caoti"
+    - token: "e0545366b1ea74b53130c44a4ca7d69cbd0f5946b3cfa382"
+      alias: "fly"
+    - token: "6a5971be4e3447e6515f4feee7403ba2146c3b35549652a0"
+      alias: "zz"
+    - token: "71f61849e0c31b465a550f87b5a6bad154a5861153c07a91"
+      alias: "jc"
+    - token: "8a090299f5eb2e0a4775dc325c77129f02d168365a621a09"
+      alias: "lr"
+    - token: "8308ed5adef26c03304e15c8bf02e3e045a87d5be0b543fb"
+      alias: "sara"
+
+# 两层闸门：global 是进程总上限；每个 provider 还有自己的子队列
+# 本机 SDK 都会 spawn 子进程，资源占用大，并发别开太高
+# 单 ChatGPT 订阅账号共享，并发越高越容易撞上游限流，默认 6 个并发
+concurrency:
+  global: 6        # 全局同时在跑的请求上限；超出进队列
+  queueMaxSize: 128
+
+retry:
+  maxAttempts: 3
+  baseDelayMs: 500
+  maxDelayMs: 8000
+
+# 调度：默认走纯中转（relay_upstream），文件/执行都在客户端本地完成。
+# 想让服务器本机跑 agent（执行命令、写文件在服务器），请求带头 x-codex-agent: 1。
+dispatch:
+  relayProvider: relay_upstream
+  agentHeader: x-codex-agent
+
+providers:
+  # 纯中转：用本机 codex 订阅登录态（~/.codex/auth.json）直连 ChatGPT 后端，
+  # 服务器只过模型、不执行、不写文件。不经过任何第三方（如 sub2api）。
+  relay_upstream:
+    type: relay
+    authMode: codex_chatgpt              # 用 codex 订阅登录态鉴权，过期自动刷新
+    # authFile: /root/.codex/auth.json   # 不填走 ~/.codex/auth.json
+    baseURL: "https://chatgpt.com/backend-api/codex"
+    concurrency: 12
+    queueMaxSize: 128
+
+  # 本机 Claude Code（agentic）。每个请求 spawn 一个 claude 子进程，自带登录态
+  # （~/.claude），不需要 apiKey。
+  claude_code_local:
+    type: claude_code_local
+    timeoutMs: 1800000
+    concurrency: 2
+    queueMaxSize: 16
+    claudeCode:
+      # cwd: /tmp/claude-workspace       # 不填走 server 进程的 cwd
+      permissionMode: bypassPermissions   # default | acceptEdits | bypassPermissions | plan | dontAsk | auto
+      toolsPreset: claude_code            # claude_code | none
+      # allowedTools: [Read, Grep, Glob, Bash]
+      # disallowedTools: [Write, Edit]
+      # additionalDirectories: [/tmp]
+      # maxTurns: 30
+      # systemPrompt: "You are a backend engineer..."
+
+  # 本机 codex CLI（agentic）。codex 自己需要本地登录态（~/.codex），apiKey 留空即可。
+  codex_local:
+    type: codex_local
+    timeoutMs: 1800000
+    concurrency: 6      # 与全局对齐；单订阅账号别开太高
+    queueMaxSize: 64
+    codex:
+      # workingDirectory: /tmp/codex-workspace
+      sandboxMode: danger-full-access     # read-only | workspace-write | danger-full-access
+      approvalPolicy: never               # never | on-request | on-failure | untrusted
+      skipGitRepoCheck: true
+      defaultReasoningEffort: low         # 快速：low；老模型可用 minimal；旗舰用 medium/high/xhigh
+      # minimal 模式会自动禁 image_gen / web_search（gpt-5 系老模型才支持 minimal）
+      # gpt-5.5 起改用 low 即可，不需要禁工具
+      # 想透传额外 codex --config，写这里：
+      # extraConfig:
+      #   web_search: disabled           # disabled | cached | live
+      #   features:
+      #     image_generation: false
+      # codexPathOverride: /usr/local/bin/codex
+
+# 顺序匹配，命中即停；支持 * 通配
+routes:
+  # cc-* → 本机 Claude Code
+  - match: "cc-*"
+    provider: claude_code_local
+    rewriteTo: claude-sonnet-4-5
+  - match: "claude-*"
+    provider: claude_code_local
+    rewriteTo: Opus 4.7
+
+  # codex-* → 本机 Codex
+  - match: "codex-*"
+    provider: codex_local
+    rewriteTo: gpt-5.5
+  - match: "gpt-*"
+    provider: codex_local
+    rewriteTo: gpt-5.5
+
+  # 兜底：任何没匹配到的 model 名都默认走 codex
+  - match: "*"
+    provider: codex_local
+    rewriteTo: gpt-5.5
