@@ -81,13 +81,18 @@ export function makeHandler(ctx: HandleCtx, binding: ProtocolBinding) {
           try {
             if (authMode === "codex_chatgpt") {
               const creds = await getCodexCreds(pc.authFile);
+              // 单账号多人共享：session_id 必须带上用户身份，否则两个客户端发了相同的
+              // x-request-id 时会落进上游同一个 session，被后端并成一段对话（串话）。
+              // 加 alias 前缀后，不同用户的 session_id 必然不同，上游层面互不可见。
+              const alias = getAuth(req)?.alias ?? "anon";
+              const sessionId = `${alias}-${requestId}`.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 128);
               authHeaders = {
                 authorization: `Bearer ${creds.accessToken}`,
                 "chatgpt-account-id": creds.accountId,
                 "openai-beta": "responses=experimental",
                 originator: "codex_cli_rs",
                 "user-agent": "codex_cli_rs",
-                session_id: requestId,
+                session_id: sessionId,
               };
             } else {
               authHeaders = pc.apiKey ? { authorization: `Bearer ${pc.apiKey}` } : {};
